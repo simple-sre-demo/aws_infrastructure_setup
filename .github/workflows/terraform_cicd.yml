@@ -1,0 +1,90 @@
+name: Terraform CI/CD
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'aws_infra_config_vars.tfvars'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  set-env-vars:
+    runs-on: ubuntu-latest
+    steps:
+       - run: echo "null"
+    outputs:
+      runner_version: "0.0.1"
+      aws-region: "eu-central-1"
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    needs: [set-env-vars]
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/terraform-runner:${{ needs.set-env-vars.outputs.runner_version }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4 # Recommended way for AWS integration
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ needs.set-env-vars.outputs.aws-region }}
+
+      # Create the Terraform plan and save it to a file
+      - name: Create Terraform Plan
+        run: |
+          cd terraform_modules
+          terraform init
+          terraform plan -var-file="../aws_infra_config_vars.tfvars" -out=tfplan
+
+      - name: Upload Terraform Plan Artifact
+        uses: actions/upload-artifact@v4 # Use v4 for newer features
+        with:
+          name: tfplan-artifact
+          path: terraform_modules/tfplan
+
+  terraform-apply:
+    runs-on: ubuntu-latest
+    needs: [set-env-vars, terraform-plan]
+    container:
+      image: ghcr.io/${{ github.repository_owner }}/terraform-runner:${{ needs.set-env-vars.outputs.runner_version }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Download the artifact to a new directory
+      - name: Download Terraform Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-artifact
+          # Specify a different path to avoid the directory conflict
+          path: downloaded_plan
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ needs.set-env-vars.outputs.aws-region }}
+
+      - name: Run "terraform apply"
+        run: |
+          # Change to the same directory where the plan was created
+          cd terraform_modules
+          # Reference the downloaded plan file with the correct path
+          terraform init
+          terraform apply ../downloaded_plan/tfplan
